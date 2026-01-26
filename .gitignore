@@ -1,0 +1,8 @@
+.env
+.env.*
+venv
+venv/
+__pycache__
+__pycache__/
+Backend/lightvision-001-bb33ee3f1ad7.json
+Backend/basestr.txt
