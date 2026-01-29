@@ -1,28 +1,44 @@
 from fastapi import APIRouter, HTTPException
-from .schemas import AgentRequest, AgentResponse
-from .agent import run_agent
+from app.schemas import QueryRequest, QueryResponse
+import asyncio
+from app.agent.runner_helper import run_session
 
-router = APIRouter()
+router = APIRouter(
+    prefix = '/query',
+    tags = ['query']
+)
 
-
-@router.post("/query", response_model=AgentResponse)
-async def query_agent_endpoint(req: AgentRequest):
-    # Basic validation
-    if not req.text and not req.image_path:
-        raise HTTPException(
-            status_code=400,
-            detail="Provide at least text or image"
-        )
+@router.post("/query", response_model=QueryResponse)
+async def query_lightvision(request: QueryRequest):
+    """
+    Endpoint to query LightVision agent.
+    Accepts:
+    - user_text: Optional text question
+    - user_image_url: Optional image URL
+    - session_id: Optional session identifier (default 'default_session')
+    """
 
     try:
-        result = await run_agent(
-            user_text=req.text,
-            user_image_path=req.image_path,
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e),
+        # Collect printed output into a list
+        output_lines = []
+
+        async def capture_output(user_text, user_image_url, session_id):
+            async for line in run_session(
+                user_text=user_text,
+                user_image_url=user_image_url,
+                session_id=session_id
+            ):
+                output_lines.append(line)
+
+        # Run the session
+        await capture_output(
+            request.user_text, request.user_image_url, request.session_id
         )
 
-    return AgentResponse(response=result)
+        return QueryResponse(
+            session_id = request.session_id,
+            response = output_lines
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

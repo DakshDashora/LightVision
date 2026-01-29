@@ -1,7 +1,9 @@
 fastapi
 uvicorn
 python-dotenv
-google-cloud-aiplatform
-vertexai
+google-adk
+google-genai
 python-multipart
 pydantic
+pillow
+aiohttp

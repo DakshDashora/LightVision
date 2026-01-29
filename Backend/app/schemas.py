@@ -1,11 +1,12 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 
-class AgentRequest(BaseModel):
-    text: Optional[str] = None
-    image_path: Optional[str] = None
+class QueryRequest(BaseModel):
+    user_text: Optional[str] = None
+    user_image_url: Optional[str] = None
+    session_id: Optional[str] = "default_session"
 
-
-class AgentResponse(BaseModel):
-    response: str
+class QueryResponse(BaseModel):
+    session_id:str
+    response:List[str]
