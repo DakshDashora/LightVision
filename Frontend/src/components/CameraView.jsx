@@ -5,22 +5,28 @@ function CameraView() {
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
   const recognitionRef = useRef(null);
-
+  const isCameraOnRef = useRef(false);
   const isProcessingRef = useRef(false);
   const isSpeakingRef = useRef(false);
+  const transcriptBufferRef = useRef("");
+  const silenceTimerRef = useRef(null);
 
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [response, setResponse] = useState("Camera is off.");
+  const [heardText, setHeardText] = useState("");
 
-  const BACKEND_URL = "https://solid-system-r4pwrwj7qw64fppjv-8000.app.github.dev/"; // your backend base URL
+  const BACKEND_URL = "https://solid-system-r4pwrwj7qw64fppjv-8000.app.github.dev/";
 
-  /* =========================
-     TEXT TO SPEECH
-  ========================== */
+  const clearSilenceTimer = () => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+  };
+
   const speak = (text) => {
     if (!text) return;
 
-    // Stop recognition while speaking
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
@@ -35,9 +41,7 @@ function CameraView() {
 
     utterance.onend = () => {
       isSpeakingRef.current = false;
-
-      // Restart recognition only if camera is on
-      if (isCameraOn && recognitionRef.current) {
+      if (isCameraOnRef.current && recognitionRef.current) {
         try {
           recognitionRef.current.start();
         } catch {}
@@ -47,9 +51,6 @@ function CameraView() {
     speechSynthesis.speak(utterance);
   };
 
-  /* =========================
-     CAMERA CONTROL
-  ========================== */
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -59,19 +60,22 @@ function CameraView() {
 
       streamRef.current = stream;
       videoRef.current.srcObject = stream;
-
+      isCameraOnRef.current = true;
       setIsCameraOn(true);
       setResponse("Camera started. Listening...");
       speak("Camera started. You can speak now.");
 
       startListening();
-    } catch (error) {
+    } catch {
       setResponse("Camera access denied.");
       speak("Camera access denied.");
     }
   };
 
   const stopCamera = () => {
+    clearSilenceTimer();
+    transcriptBufferRef.current = "";
+
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
@@ -87,34 +91,35 @@ function CameraView() {
 
     speechSynthesis.cancel();
 
+    isCameraOnRef.current = false;
     setIsCameraOn(false);
+    setHeardText("");
     setResponse("Camera stopped.");
   };
 
-  /* =========================
-     FRAME CAPTURE
-  ========================== */
   const captureFrame = () => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas) return null;
 
+    const hasVideoFrame =
+      video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0;
+    if (!hasVideoFrame) return null;
+
     const ctx = canvas.getContext("2d");
-
-    canvas.width = 640;
-    canvas.height = 480;
-
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    return canvas.toDataURL("image/jpeg", 0.6);
+    return canvas.toDataURL("image/jpeg", 0.7);
   };
 
-  /* =========================
-     BACKEND CALL
-  ========================== */
   const sendToBackend = async (base64Image, transcript) => {
     if (isProcessingRef.current) return;
+    if (!transcript || !base64Image) return;
+
     isProcessingRef.current = true;
+    setResponse("Processing...");
 
     try {
       const payload = {
@@ -129,14 +134,17 @@ function CameraView() {
         body: JSON.stringify(payload),
       });
 
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`Backend error ${res.status}: ${errorText}`);
+      }
+
       const data = await res.json();
 
       if (Array.isArray(data.response)) {
-        const finalText = data.response.join(" ");
-        setResponse(finalText);
-
-        // Speak response, recognition restarts after speech ends
-        speak(finalText);
+        const finalText = data.response.join(" ").trim();
+        setResponse(finalText || "No response from backend.");
+        speak(finalText || "No response from backend.");
       } else {
         setResponse("Invalid response format.");
         speak("Invalid response from server.");
@@ -144,14 +152,31 @@ function CameraView() {
     } catch (error) {
       setResponse("Backend connection error.");
       speak("Backend connection error.");
+      console.error(error);
     } finally {
       isProcessingRef.current = false;
     }
   };
 
-  /* =========================
-     SPEECH RECOGNITION
-  ========================== */
+  const flushTranscriptAndSend = async () => {
+    if (isProcessingRef.current || isSpeakingRef.current || !isCameraOnRef.current) {
+      return;
+    }
+
+    const transcript = transcriptBufferRef.current.trim();
+    transcriptBufferRef.current = "";
+
+    if (!transcript) return;
+
+    const image = captureFrame();
+    if (!image) {
+      setResponse("Camera frame is not ready yet. Please speak again.");
+      return;
+    }
+
+    await sendToBackend(image, transcript);
+  };
+
   const startListening = () => {
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -161,7 +186,6 @@ function CameraView() {
       return;
     }
 
-    // If recognition already exists, just start it
     if (recognitionRef.current) {
       try {
         recognitionRef.current.start();
@@ -170,27 +194,29 @@ function CameraView() {
     }
 
     const recognition = new SpeechRecognition();
-    recognition.continuous = true; // very important
-    recognition.interimResults = false;
+    recognition.continuous = true;
+    recognition.interimResults = true;
     recognition.lang = "en-US";
 
-    recognition.onstart = () => {
-      console.log("Listening started...");
-    };
-
-    recognition.onresult = async (event) => {
+    recognition.onresult = (event) => {
       if (isSpeakingRef.current || isProcessingRef.current) return;
 
-      const transcript =
-        event.results[event.results.length - 1][0].transcript;
-
-      console.log("User said:", transcript);
-      setResponse(`You said: ${transcript}`);
-
-      const image = captureFrame();
-      if (image) {
-        await sendToBackend(image, transcript);
+      let mergedText = "";
+      for (let i = 0; i < event.results.length; i += 1) {
+        mergedText += `${event.results[i][0].transcript} `;
       }
+
+      const cleanText = mergedText.trim();
+      if (!cleanText) return;
+
+      transcriptBufferRef.current = cleanText;
+      setHeardText(cleanText);
+      setResponse(`You said: ${cleanText}`);
+
+      clearSilenceTimer();
+      silenceTimerRef.current = setTimeout(() => {
+        flushTranscriptAndSend();
+      }, 1200);
     };
 
     recognition.onerror = (event) => {
@@ -201,15 +227,14 @@ function CameraView() {
     };
 
     recognition.onend = () => {
-      // Safe restart if camera on and not speaking
-      if (isCameraOn && !isSpeakingRef.current) {
+      if (isCameraOnRef.current && !isSpeakingRef.current) {
         setTimeout(() => {
           try {
             recognition.start();
-          } catch (e) {
-            console.log("Recognition restart failed:", e);
+          } catch (error) {
+            console.log("Recognition restart failed:", error);
           }
-        }, 500);
+        }, 300);
       }
     };
 
@@ -220,18 +245,12 @@ function CameraView() {
     } catch {}
   };
 
-  /* =========================
-     CLEANUP
-  ========================== */
   useEffect(() => {
     return () => {
       stopCamera();
     };
   }, []);
 
-  /* =========================
-     UI
-  ========================== */
   return (
     <div className="camera-container">
       <div className="video-wrapper">
@@ -253,6 +272,7 @@ function CameraView() {
       </div>
 
       <div className="response-box">{response}</div>
+      {heardText && <div className="response-box">Heard: {heardText}</div>}
     </div>
   );
 }
