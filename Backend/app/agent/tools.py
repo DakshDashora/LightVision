@@ -20,6 +20,29 @@ if not api_key:
 client = Client(api_key=api_key)
 VISION_MODEL = "gemini-2.5-pro"
 
+
+def _parse_json_response(response_text: str) -> Dict[str, Any]:
+    """Parse model output safely without crashing the API."""
+    if not response_text:
+        return {"error": "Model returned an empty response."}
+
+    try:
+        return json.loads(response_text)
+    except json.JSONDecodeError:
+        cleaned = response_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`")
+            cleaned = cleaned.replace("json\n", "", 1).strip()
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError:
+                pass
+
+        return {
+            "error": "Model returned non-JSON output.",
+            "raw_response": response_text,
+        }
+
 # Helper to safely reconstruct the image part
 def get_clean_image_part(stored_artifact):
     """Extracts bytes/mime from the stored artifact and makes a fresh Part."""
@@ -70,12 +93,16 @@ async def vision_describe(image_artifact_filename: str, session_id: str) -> Dict
     """
     
     # 4. Call Model (Now safe because image_part is guaranteed not None)
-    resp = client.models.generate_content(
-        model=VISION_MODEL,
-        contents=[prompt, image_part],
-        config=types.GenerateContentConfig(response_mime_type="application/json")
-    )
-    return json.loads(resp.text)
+    try:
+        resp = client.models.generate_content(
+            model=VISION_MODEL,
+            contents=[prompt, image_part],
+            config=types.GenerateContentConfig(response_mime_type="application/json")
+        )
+    except Exception as e:
+        return {"error": "Vision model request failed.", "detail": str(e)}
+
+    return _parse_json_response(resp.text)
 
 # ===== TOOL: OCR Read =====
 async def ocr_read(image_artifact_filename: str, session_id: str) -> Dict[str, Any]:
@@ -101,10 +128,13 @@ async def ocr_read(image_artifact_filename: str, session_id: str) -> Dict[str, A
 
     prompt = "Extract all visible text. Return JSON only."
     
-    resp = client.models.generate_content(
-        model=VISION_MODEL,
-        contents=[prompt, image_part],
-        config=types.GenerateContentConfig(response_mime_type="application/json")
-    )
-    return json.loads(resp.text)
+    try:
+        resp = client.models.generate_content(
+            model=VISION_MODEL,
+            contents=[prompt, image_part],
+            config=types.GenerateContentConfig(response_mime_type="application/json")
+        )
+    except Exception as e:
+        return {"error": "OCR model request failed.", "detail": str(e)}
 
+    return _parse_json_response(resp.text)
